@@ -41,8 +41,8 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r25c
         run: |
-          # Устанавливаем зависимости mitmproxy
-          pip3 install -r requirements.txt
+          # Устанавливаем зависимости mitmproxy из pyproject.toml
+          pip3 install .
 
           # Настраиваем пути для кросс-компиляции под Android ARM64
           export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
