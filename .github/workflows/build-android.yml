@@ -1,13 +1,7 @@
 name: Build mitmproxy for Android ARM64
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch:
+  workflow_dispatch: # Только ручной запуск
 
 jobs:
   build-android-arm64:
@@ -18,37 +12,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Устанавливаем Android NDK
+      #主根 NDK
       - name: Set up Android NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25c
 
-      # 3. Устанавливаем Python и необходимые инструменты
+      # 2. Устанавливаем Python и необходимые инструменты
       - name: Install Python and tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip python3-dev
+          sudo apt-get install -y python3 python3-pip python3-dev build-essential patchelf
           pip3 install setuptools wheel
 
-      # 4. Устанавливаем Nuitka
+      # 3. Устанавливаем Nuitka
       - name: Install Nuitka
         run: |
           pip3 install nuitka
 
-      # 5. Кросс-компиляция mitmproxy для Android ARM64
+      # 4. Кросс-компиляция mitmproxy для Android ARM64
       - name: Build mitmproxy for Android ARM64
         env:
           ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r25c
         run: |
-          # Устанавливаем зависимости mitmproxy из pyproject.toml
-          pip3 install .
-
           # Настраиваем пути для кросс-компиляции под Android ARM64
           export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
           export CC=aarch64-linux-android33-clang
           export CXX=aarch64-linux-android33-clang++
           export LD=aarch64-linux-android-ld
+          export AR=aarch64-linux-android-ar
+          export RANLIB=aarch64-linux-android-ranlib
+          export CFLAGS="-I$ANDROID_NDK_HOME/sysroot/usr/include --sysroot=$ANDROID_NDK_HOME/sysroot -fPIC"
+          export LDFLAGS="--sysroot=$ANDROID_NDK_HOME/sysroot"
+
+          # Устанавливаем зависимости mitmproxy для ARM64
+          pip3 install . --platform manylinux2014_aarch64 --only-binary=:all: --target ./python-deps
 
           # Компилируем mitmproxy в бинарник
           python3 -m nuitka \
@@ -56,27 +54,27 @@ jobs:
             --onefile \
             --assume-yes-for-downloads \
             --output-dir=dist \
-            --target-arch=arm64 \
             --clang \
             --lto=yes \
             --static-libpython \
+            -I./python-deps/include \
+            -L./python-deps/lib \
             mitmproxy/main.py
 
-      # 6. Переименовываем бинарник
+      # 5. Переименовываем бинарник
       - name: Rename binary
         run: |
           mv dist/main.bin mitmproxy-android-arm64
 
-      # 7. Сохраняем бинарник как артефакт
+      # 6. Сохраняем бинарник как артефакт
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: mitmproxy-android-arm64
           path: mitmproxy-android-arm64
 
-      # 8. (Опционально) Тестируем через ADB
+      # 7. (Опционально) Тестируем через ADB
       - name: Test binary via ADB
-        if: ${{ github.event_name != 'pull_request' }}
         run: |
           sudo apt-get install -y android-tools-adb
           adb devices
