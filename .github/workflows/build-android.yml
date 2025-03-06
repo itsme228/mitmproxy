@@ -1,4 +1,4 @@
-name: Build mitmproxy for Android
+name: Build mitmproxy for Android ARM64
 
 on:
   push:
@@ -7,10 +7,10 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch: # Позволяет запускать вручную
+  workflow_dispatch:
 
 jobs:
-  build-android:
+  build-android-arm64:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,76 +18,68 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Устанавливаем QEMU для эмуляции ARM
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # 2. Устанавливаем Android NDK
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
         with:
-          platforms: arm64
+          ndk-version: r25c
 
-      # 3. Настраиваем Docker Buildx для сборки под ARM
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 4. Создаём Dockerfile и собираем бинарник
-      - name: Build mitmproxy for Android
+      # 3. Устанавливаем Python и необходимые инструменты
+      - name: Install Python and tools
         run: |
-          # Создаём временный Dockerfile
-          cat << 'EOF' > Dockerfile
-          FROM python:3.11-slim AS builder
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip python3-dev
+          pip3 install setuptools wheel
 
-          # Устанавливаем зависимости для компиляции
-          RUN apt-get update && apt-get install -y \
-              gcc \
-              musl-dev \
-              libffi-dev \
-              openssl-dev \
-              && rm -rf /var/lib/apt/lists/*
+      # 4. Устанавливаем Nuitka
+      - name: Install Nuitka
+        run: |
+          pip3 install nuitka
 
-          # Устанавливаем Nuitka для компиляции Python в бинарник
-          RUN pip install nuitka
-
-          # Копируем репозиторий
-          WORKDIR /app
-          COPY . .
-
+      # 5. Кросс-компиляция mitmproxy для Android ARM64
+      - name: Build mitmproxy for Android ARM64
+        env:
+          ANDROID_NDK_HOME: ${{ github.workspace }}/android-ndk-r25c
+        run: |
           # Устанавливаем зависимости mitmproxy
-          RUN pip install -r requirements.txt
+          pip3 install -r requirements.txt
 
-          # Компилируем mitmproxy в бинарник для ARM
-          RUN python -m nuitka --standalone --onefile --assume-yes-for-downloads \
-              --output-dir=/app/dist \
-              --target-arch=arm64 \
-              mitmproxy/main.py
+          # Настраиваем пути для кросс-компиляции под Android ARM64
+          export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          export CC=aarch64-linux-android33-clang
+          export CXX=aarch64-linux-android33-clang++
+          export LD=aarch64-linux-android-ld
 
-          # Финальный образ с бинарником
-          FROM scratch
-          COPY --from=builder /app/dist/main.bin /mitmproxy
-          EOF
+          # Компилируем mitmproxy в бинарник
+          python3 -m nuitka \
+            --standalone \
+            --onefile \
+            --assume-yes-for-downloads \
+            --output-dir=dist \
+            --target-arch=arm64 \
+            --clang \
+            --lto=yes \
+            --static-libpython \
+            mitmproxy/main.py
 
-          # Собираем Docker-образ для ARM64
-          docker buildx build \
-            --platform linux/arm64 \
-            --output type=local,dest=./output \
-            -t mitmproxy-android .
+      # 6. Переименовываем бинарник
+      - name: Rename binary
+        run: |
+          mv dist/main.bin mitmproxy-android-arm64
 
-      # 5. Сохраняем бинарник как артефакт
+      # 7. Сохраняем бинарник как артефакт
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mitmproxy-android-binary
-          path: ./output/mitmproxy
+          name: mitmproxy-android-arm64
+          path: mitmproxy-android-arm64
 
-      # 6. (Опционально) Тестируем бинарник через ADB
+      # 8. (Опционально) Тестируем через ADB
       - name: Test binary via ADB
-        if: ${{ github.event_name != 'pull_request' }} # Только для push/main
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
-          # Устанавливаем ADB
-          sudo apt-get update && sudo apt-get install -y android-tools-adb
-          # Подключаем устройство (предполагается, что оно уже подключено)
+          sudo apt-get install -y android-tools-adb
           adb devices
-          # Копируем бинарник на устройство
-          adb push ./output/mitmproxy /data/local/tmp/mitmproxy
-          # Даём права на выполнение
+          adb push mitmproxy-android-arm64 /data/local/tmp/mitmproxy
           adb shell chmod +x /data/local/tmp/mitmproxy
-          # Запускаем
           adb shell /data/local/tmp/mitmproxy --version
