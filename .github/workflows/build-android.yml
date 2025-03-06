@@ -1,0 +1,93 @@
+name: Build mitmproxy for Android
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: # Позволяет запускать вручную
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Клонируем репозиторий
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Устанавливаем QEMU для эмуляции ARM
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      # 3. Настраиваем Docker Buildx для сборки под ARM
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. Создаём Dockerfile и собираем бинарник
+      - name: Build mitmproxy for Android
+        run: |
+          # Создаём временный Dockerfile
+          cat << 'EOF' > Dockerfile
+          FROM python:3.11-slim AS builder
+
+          # Устанавливаем зависимости для компиляции
+          RUN apt-get update && apt-get install -y \
+              gcc \
+              musl-dev \
+              libffi-dev \
+              openssl-dev \
+              && rm -rf /var/lib/apt/lists/*
+
+          # Устанавливаем Nuitka для компиляции Python в бинарник
+          RUN pip install nuitka
+
+          # Копируем репозиторий
+          WORKDIR /app
+          COPY . .
+
+          # Устанавливаем зависимости mitmproxy
+          RUN pip install -r requirements.txt
+
+          # Компилируем mitmproxy в бинарник для ARM
+          RUN python -m nuitka --standalone --onefile --assume-yes-for-downloads \
+              --output-dir=/app/dist \
+              --target-arch=arm64 \
+              mitmproxy/main.py
+
+          # Финальный образ с бинарником
+          FROM scratch
+          COPY --from=builder /app/dist/main.bin /mitmproxy
+          EOF
+
+          # Собираем Docker-образ для ARM64
+          docker buildx build \
+            --platform linux/arm64 \
+            --output type=local,dest=./output \
+            -t mitmproxy-android .
+
+      # 5. Сохраняем бинарник как артефакт
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitmproxy-android-binary
+          path: ./output/mitmproxy
+
+      # 6. (Опционально) Тестируем бинарник через ADB
+      - name: Test binary via ADB
+        if: ${{ github.event_name != 'pull_request' }} # Только для push/main
+        run: |
+          # Устанавливаем ADB
+          sudo apt-get update && sudo apt-get install -y android-tools-adb
+          # Подключаем устройство (предполагается, что оно уже подключено)
+          adb devices
+          # Копируем бинарник на устройство
+          adb push ./output/mitmproxy /data/local/tmp/mitmproxy
+          # Даём права на выполнение
+          adb shell chmod +x /data/local/tmp/mitmproxy
+          # Запускаем
+          adb shell /data/local/tmp/mitmproxy --version
